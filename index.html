@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lakeside Open House Loop</title>
+<style>
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; font-family:system-ui,sans-serif; cursor:none; }
+  video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+  #fade { position:absolute; inset:0; background:#000; opacity:0; transition:opacity .5s;
+          pointer-events:none; z-index:1; }
+  #controls { position:absolute; bottom:0; left:0; right:0; z-index:5;
+              opacity:0; transition:opacity .3s; cursor:default; }
+  #controls.visible { opacity:1; }
+  #title { color:#fff; font-size:1.6rem; padding:0 20px 10px;
+           text-shadow:0 2px 8px #000; pointer-events:none; }
+  #scrubber { position:relative; height:6px; margin:0 12px 12px; cursor:pointer;
+              background:rgba(255,255,255,.2); border-radius:3px; }
+  #controls:hover #scrubber,
+  #controls.visible #scrubber { height:10px; }
+  #scrub-fill { height:100%; width:0; background:#fff; border-radius:3px; pointer-events:none; }
+  #scrub-dots { position:absolute; inset:0; display:flex; pointer-events:none; }
+  #scrub-dots span { flex:1; border-right:2px solid rgba(0,0,0,.5); }
+  #scrub-dots span:last-child { border-right:none; }
+  #scrub-hover { position:absolute; top:-28px; background:rgba(0,0,0,.75); color:#fff;
+                 font-size:.8rem; padding:2px 6px; border-radius:4px; pointer-events:none;
+                 display:none; transform:translateX(-50%); white-space:nowrap; }
+  #unlock { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
+            justify-content:center; background:#111; color:#fff; z-index:20; gap:16px; }
+  #unlock input { font-size:1.2rem; padding:8px 16px; border-radius:6px; border:2px solid #444;
+                  background:#222; color:#fff; text-align:center; outline:none; width:240px; }
+  #unlock input:focus { border-color:#888; }
+  #unlock button { font-size:1.2rem; padding:8px 24px; border-radius:6px; border:none;
+                   background:#fff; color:#000; cursor:pointer; }
+  #unlock .status { font-size:1rem; color:#aaa; min-height:1.4em; }
+  #unlock .error { color:#f66; }
+</style>
+</head>
+<body>
+<div id="unlock">
+  <div style="font-size:2rem">Lakeside Open House</div>
+  <div style="position:relative;display:inline-block">
+    <input id="pw" type="password" placeholder="Password" autofocus>
+    <span id="toggle-pw" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);cursor:pointer;user-select:none;font-size:1.2rem">Show</span>
+  </div>
+  <button id="go">Unlock</button>
+  <div class="status" id="status"></div>
+</div>
+<video id="player"></video>
+<div id="fade"></div>
+<div id="controls">
+  <div id="title"></div>
+  <div id="scrubber">
+    <div id="scrub-fill"></div>
+    <div id="scrub-dots"></div>
+    <div id="scrub-hover"></div>
+  </div>
+</div>
+
+<script>
+// ---- EDIT THIS LIST ----
+const CLIPS = [
+  { src: "clips/choir.mp4.enc",     title: '7-8 Grade Choir: "For Good" from Wicked' },
+  { src: "clips/orchestra.mp4.enc", title: '7-8 Grade Orchestra: "Golden" from K-Pop Demon Hunters' },
+  { src: "clips/play.mp4.enc",      title: "Upper School Fall Play: Peter and the Starcatcher" },
+];
+const ITERATIONS = 100000;
+// ------------------------
+
+const player = document.getElementById("player");
+const fade = document.getElementById("fade");
+const titleEl = document.getElementById("title");
+const controls = document.getElementById("controls");
+const scrubber = document.getElementById("scrubber");
+const scrubFill = document.getElementById("scrub-fill");
+const scrubHover = document.getElementById("scrub-hover");
+const scrubDots = document.getElementById("scrub-dots");
+const statusEl = document.getElementById("status");
+
+let i = 0, totalDur = 0, clipStarts = [], durs = [], dursReady = false;
+let blobUrls = []; // decrypted blob URLs
+let hideTimer = null;
+
+// --- Crypto ---
+async function deriveKey(password, salt) {
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveKey"]
+  );
+  return crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt: salt, iterations: ITERATIONS, hash: "SHA-256" },
+    keyMaterial,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"]
+  );
+}
+
+async function decryptFile(url, password) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error("Failed to fetch " + url);
+  const arr = new Uint8Array(await resp.arrayBuffer());
+  const salt = arr.slice(0, 16);
+  const iv = arr.slice(16, 28);
+  const ct = arr.slice(28);
+  const key = await deriveKey(password, salt);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, ct);
+  return URL.createObjectURL(new Blob([plain], { type: "video/mp4" }));
+}
+
+// --- Unlock flow ---
+async function unlock() {
+  const pw = document.getElementById("pw").value;
+  if (!pw) return;
+  statusEl.className = "status";
+  statusEl.textContent = "Decrypting...";
+  document.getElementById("go").disabled = true;
+
+  try {
+    for (let j = 0; j < CLIPS.length; j++) {
+      statusEl.textContent = `Decrypting clip ${j + 1} / ${CLIPS.length}...`;
+      blobUrls[j] = await decryptFile(CLIPS[j].src, pw);
+    }
+  } catch (e) {
+    statusEl.className = "status error";
+    statusEl.textContent = "Failed: " + e.message;
+    document.getElementById("go").disabled = false;
+    blobUrls = [];
+    return;
+  }
+
+  document.getElementById("unlock").remove();
+  initPlayer();
+}
+
+document.getElementById("go").addEventListener("click", unlock);
+document.getElementById("pw").addEventListener("keydown", e => { if (e.key === "Enter") unlock(); });
+document.getElementById("toggle-pw").addEventListener("click", () => {
+  const pw = document.getElementById("pw");
+  const tog = document.getElementById("toggle-pw");
+  if (pw.type === "password") { pw.type = "text"; tog.textContent = "Hide"; }
+  else { pw.type = "password"; tog.textContent = "Show"; }
+  pw.focus();
+});
+
+// --- Player (runs after decryption) ---
+function initPlayer() {
+  // Get durations from blob URLs
+  let loaded = 0;
+  durs = new Array(CLIPS.length).fill(0);
+  CLIPS.forEach((_, idx) => {
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.src = blobUrls[idx];
+    v.onloadedmetadata = () => {
+      durs[idx] = v.duration;
+      if (++loaded === CLIPS.length) {
+        totalDur = durs.reduce((a, b) => a + b, 0);
+        clipStarts = [];
+        let sum = 0;
+        for (let j = 0; j < durs.length; j++) { clipStarts.push(sum); sum += durs[j]; }
+        dursReady = true;
+        scrubDots.innerHTML = "";
+        CLIPS.forEach((_, j) => {
+          const s = document.createElement("span");
+          s.style.flex = durs[j].toString();
+          scrubDots.appendChild(s);
+        });
+      }
+    };
+  });
+
+  // Start playing
+  player.src = blobUrls[0];
+  player.play();
+  showTitle();
+
+  // Events
+  player.addEventListener("ended", advance);
+  player.addEventListener("timeupdate", () => {
+    if (!dursReady) return;
+    const pct = ((clipStarts[i] + player.currentTime) / totalDur) * 100;
+    scrubFill.style.width = Math.min(pct, 100) + "%";
+  });
+
+  document.addEventListener("keydown", e => {
+    if (e.code === "Space") {
+      e.preventDefault();
+      if (player.paused) player.play(); else player.pause();
+    }
+    if (e.code === "ArrowRight") advance();
+    if (e.code === "ArrowLeft") prev();
+  });
+}
+
+// --- Controls show/hide ---
+document.addEventListener("mousemove", () => {
+  controls.classList.add("visible");
+  document.body.style.cursor = "default";
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    controls.classList.remove("visible");
+    document.body.style.cursor = "none";
+  }, 3000);
+});
+
+// --- Scrubber ---
+function globalToClip(t) {
+  for (let j = CLIPS.length - 1; j >= 0; j--) {
+    if (t >= clipStarts[j]) return { clip: j, time: t - clipStarts[j] };
+  }
+  return { clip: 0, time: 0 };
+}
+function pctFromEvent(e) {
+  const r = scrubber.getBoundingClientRect();
+  return Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+}
+function fmtTime(s) {
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return m + ":" + String(sec).padStart(2, "0");
+}
+
+scrubber.addEventListener("mousemove", e => {
+  if (!dursReady) return;
+  const pct = pctFromEvent(e);
+  const gt = pct * totalDur;
+  const { clip } = globalToClip(gt);
+  scrubHover.style.display = "block";
+  scrubHover.style.left = (pct * 100) + "%";
+  scrubHover.textContent = fmtTime(gt) + " — " + CLIPS[clip].title;
+});
+scrubber.addEventListener("mouseleave", () => { scrubHover.style.display = "none"; });
+scrubber.addEventListener("click", e => {
+  if (!dursReady) return;
+  const pct = pctFromEvent(e);
+  const gt = pct * totalDur;
+  const { clip, time } = globalToClip(gt);
+  if (clip !== i) {
+    i = clip;
+    player.src = blobUrls[i];
+    player.currentTime = time;
+    player.play();
+    showTitle();
+  } else {
+    player.currentTime = time;
+  }
+  scrubFill.style.width = (pct * 100) + "%";
+});
+
+// --- Playback ---
+function showTitle() {
+  titleEl.textContent = `${CLIPS[i].title}  (${i + 1} / ${CLIPS.length})`;
+}
+function playClip() {
+  fade.style.opacity = 1;
+  setTimeout(() => {
+    player.src = blobUrls[i];
+    player.play();
+    showTitle();
+    setTimeout(() => fade.style.opacity = 0, 300);
+  }, 500);
+}
+function advance() { i = (i + 1) % CLIPS.length; playClip(); }
+function prev()    { i = (i - 1 + CLIPS.length) % CLIPS.length; playClip(); }
+</script>
+</body>
+</html>
