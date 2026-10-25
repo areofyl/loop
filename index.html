@@ -68,9 +68,9 @@ const CLIPS = [
   { src: "clips/choir2.mp4.enc",    title: 'Upper School Concert Choir: "Laduma" — Traditional isiZulu' },
   { src: "clips/jazz.mp4.enc",      title: 'Upper School Jazz Band: "Prairie Dance" by Maria Schneider' },
   { src: "clips/symphony.mp4.enc",  title: "Upper School Symphony: Disney & Pixar Medley" },
-  { src: "clips/drowsy.mp4.enc",    title: "Upper School Musical: The Drowsy Chaperone" },
+  { src: "clips/drowsy.mp4.enc",    title: "Middle School Musical: The Drowsy Chaperone" },
 ];
-const ITERATIONS = 100000;
+const ITERATIONS = 10000;
 // ------------------------
 
 const player = document.getElementById("player");
@@ -122,10 +122,14 @@ async function unlock() {
   document.getElementById("go").disabled = true;
 
   try {
-    for (let j = 0; j < CLIPS.length; j++) {
-      statusEl.textContent = `Decrypting clip ${j + 1} / ${CLIPS.length}...`;
-      blobUrls[j] = await decryptFile(CLIPS[j].src, pw);
-    }
+    // Verify password with first clip before decrypting all
+    blobUrls[0] = await decryptFile(CLIPS[0].src, pw);
+    statusEl.textContent = `Decrypting all clips...`;
+    // Decrypt rest in parallel
+    const rest = await Promise.all(
+      CLIPS.slice(1).map(c => decryptFile(c.src, pw))
+    );
+    rest.forEach((url, j) => blobUrls[j + 1] = url);
   } catch (e) {
     statusEl.className = "status error";
     statusEl.textContent = "Failed: " + e.message;
