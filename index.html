@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <title>Lakeside Open House Loop</title>
+<link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;600&display=swap" rel="stylesheet">
 <style>
-  html, body { margin:0; height:100%; background:#000; overflow:hidden; font-family:system-ui,sans-serif; cursor:none; }
+  html, body { margin:0; height:100%; background:#000; overflow:hidden; font-family:'Lora',serif; cursor:none; }
   video { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
   #fade { position:absolute; inset:0; background:#000; opacity:0; transition:opacity .5s;
           pointer-events:none; z-index:1; }
@@ -33,6 +34,9 @@
                    background:#fff; color:#000; cursor:pointer; }
   #unlock .status { font-size:1rem; color:#aaa; min-height:1.4em; }
   #unlock .error { color:#f66; }
+  #progress-bar { width:280px; height:6px; background:rgba(255,255,255,.15); border-radius:3px;
+                  overflow:hidden; display:none; }
+  #progress-fill { height:100%; width:0; background:#fff; transition:width .15s linear; }
 </style>
 </head>
 <body>
@@ -44,6 +48,7 @@
   </div>
   <button id="go">Unlock</button>
   <div class="status" id="status"></div>
+  <div id="progress-bar"><div id="progress-fill"></div></div>
 </div>
 <video id="player"></video>
 <div id="fade"></div>
@@ -69,6 +74,7 @@ const CLIPS = [
   { src: "clips/jazz.mp4.enc",      title: 'Upper School Jazz Band: "Prairie Dance" by Maria Schneider' },
   { src: "clips/symphony.mp4.enc",  title: "Upper School Symphony: Disney & Pixar Medley" },
   { src: "clips/drowsy.mp4.enc",    title: "Middle School Musical: The Drowsy Chaperone" },
+  { src: "clips/anythinggoes.mp4.enc", title: "Upper School Musical: Anything Goes" },
 ];
 const ITERATIONS = 10000;
 // ------------------------
@@ -118,18 +124,28 @@ async function unlock() {
   const pw = document.getElementById("pw").value;
   if (!pw) return;
   statusEl.className = "status";
-  statusEl.textContent = "Decrypting...";
+  statusEl.textContent = "Verifying password...";
   document.getElementById("go").disabled = true;
+  const progressBar = document.getElementById("progress-bar");
+  const progressFill = document.getElementById("progress-fill");
 
   try {
-    // Verify password with first clip before decrypting all
+    // Verify password with first clip
     blobUrls[0] = await decryptFile(CLIPS[0].src, pw);
-    statusEl.textContent = `Decrypting all clips...`;
-    // Decrypt rest in parallel
-    const rest = await Promise.all(
-      CLIPS.slice(1).map(c => decryptFile(c.src, pw))
+    progressBar.style.display = "block";
+    let done = 1;
+    progressFill.style.width = ((done / CLIPS.length) * 100) + "%";
+    statusEl.textContent = `Decrypting clips... ${done} / ${CLIPS.length}`;
+    // Decrypt rest in parallel, update progress as each finishes
+    const rest = CLIPS.slice(1).map((c, j) =>
+      decryptFile(c.src, pw).then(url => {
+        blobUrls[j + 1] = url;
+        done++;
+        progressFill.style.width = ((done / CLIPS.length) * 100) + "%";
+        statusEl.textContent = `Decrypting clips... ${done} / ${CLIPS.length}`;
+      })
     );
-    rest.forEach((url, j) => blobUrls[j + 1] = url);
+    await Promise.all(rest);
   } catch (e) {
     statusEl.className = "status error";
     statusEl.textContent = "Failed: " + e.message;
